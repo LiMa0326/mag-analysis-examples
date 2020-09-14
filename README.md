@@ -7,5 +7,8 @@ For using PandasMagClass.py to read MAG streams for Pandas:
 `df_papers = mag.get_data_frame('Papers')`
 `df_paper_author_affiliations = mag.get_data_frame('PaperAuthorAffiliations')`
 
-## Resources
+# MAG Analysis Examples (Pyspark)
+Draw paper/citations/saliency growth comparison figure by single region and regional collaborations.
+
+## Resources (Pandas)
 * [AffiliationRegions.txt](https://github.com/microsoft/mag-covid19-research-examples/blob/master/src/MAG-Samples/impact-of-covid19-on-the-computer-science-research-community/AffiliationRegions.txt)
