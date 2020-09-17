@@ -1,0 +1,290 @@
+// Generated Code Behind Header
+USE DATABASE [master];
+USE SCHEMA [dbo];
+// Generated Code Behind Header
+
+// Outputs
+DECLARE @Out_RegionYearPaperStats string = @""; // set your own output location
+
+// Loading MAG
+DECLARE @dataVersion string = ""; // The container name in Azure Storage (AS) account containing MAG dataset, Usually in forms of mag-yyyy-mm-dd
+DECLARE @blobAccount string = ""; // Azure Bolb Storage account containing MAG dataset
+DECLARE @uriPrefix   string = "wasb://" + @dataVersion + "@" + @blobAccount + "/";
+DECLARE @geoMappingFile string = @"ISOCodeRegion.txt"; // This file could be found in source folder, represent the ISO-3166 code to Region match
+
+@magPapers = Papers(@uriPrefix);
+@magPaperAuthorAffiliation = PaperAuthorAffiliations(@uriPrefix);
+@magPaperFos = PaperFieldsOfStudy(@uriPrefix);
+@magAffiliations = Affiliations(@uriPrefix);
+
+// Find target papers with field of study Ids
+@targetFosPapers =
+    SELECT
+        PaperId
+    FROM @magPaperFos 
+    WHERE FieldOfStudyId == 154945302 // artificial intelligence
+    ;
+
+@targetPapers =
+    SELECT
+        A.PaperId,
+        A.FamilyId,
+        (int)A.Year AS Year,
+        Math.Exp(((double)(A.Rank))/-1000.0) AS Saliency,
+        A.EstimatedCitation AS Citations
+    FROM @magPapers AS A INNER JOIN @targetFosPapers AS B ON A.PaperId == B.PaperId
+    WHERE A.Year != NULL AND !String.IsNullOrWhiteSpace(DocType) AND DocType != @"Patent" AND DocType != @"Dataset";
+
+// Aggregate paper family
+@paper_FamilyIdIsNull =
+    SELECT 
+        PaperId,
+        Year,
+        Saliency,
+        Citations
+    FROM @targetPapers
+    WHERE FamilyId == NULL;
+
+@paper_FamilyIdNotNull_SC =
+    SELECT 
+        FamilyId,
+        (double)SUM(Saliency) AS Saliency,
+        (long)SUM(Citations) AS Citations
+    FROM @targetPapers
+    WHERE FamilyId != NULL
+    GROUP BY FamilyId;
+
+@paper_FamilyIdNotNull_Year =
+    SELECT
+        FamilyId,
+        Year
+    FROM @targetPapers
+    WHERE FamilyId != NULL AND FamilyId == PaperId;
+
+@paper_FamilyIdNotNull =
+    SELECT
+        (long)A.FamilyId AS PaperId,
+        (int)B.Year AS Year,
+        A.Saliency,
+        A.Citations
+    FROM @paper_FamilyIdNotNull_SC AS A INNER JOIN @paper_FamilyIdNotNull_Year AS B ON A.FamilyId == B.FamilyId;
+
+@paperFamily =
+    SELECT *
+    FROM @paper_FamilyIdIsNull
+    UNION
+    SELECT *
+    FROM @paper_FamilyIdNotNull;
+
+// Filter papers with selected years
+@paperYears =
+    SELECT *
+    FROM @paperFamily
+    WHERE Year >= 2000 AND Year <= 2019;
+
+// Get papers with affiliation Ids 
+@papersAffiliation =
+    SELECT DISTINCT
+        A.PaperId,
+        A.Year,
+        A.Saliency,
+        A.Citations,
+        (long)B.AffiliationId AS AffiliationId
+    FROM @paperYears AS A INNER JOIN @magPaperAuthorAffiliation AS B ON A.PaperId == B.PaperId
+    WHERE B.AffiliationId != NULL;
+
+// Get Affiliations with region
+@geoMapping =
+    EXTRACT 
+        Iso3166Code string,
+        Region string
+    FROM @geoMappingFile
+    USING Extractors.Tsv(skipFirstNRows:1);
+
+@IsoCodeRegion =
+	SELECT 
+		Iso3166Code,
+		Region
+	FROM @geoMapping
+	WHERE Region == "United States" || Region == "EU" || Region == "China" || Region == "Japan";
+
+@affiliationsWithRegion =
+    SELECT 
+        A.AffiliationId,
+        B.Region
+    FROM @magAffiliations AS A INNER JOIN @IsoCodeRegion AS B ON A.Iso3166Code == B.Iso3166Code;
+
+//Get paper with region
+@papersAffiliationRegion =
+    SELECT 
+        A.PaperId,
+        A.Year,
+        A.Saliency,
+        A.Citations,
+        A.AffiliationId,
+        B.Region
+    FROM @papersAffiliation AS A INNER JOIN @affiliationsWithRegion AS B ON A.AffiliationId == B.AffiliationId;
+ 
+@paperRegion =
+    SELECT DISTINCT
+        PaperId,
+        Year,
+        Saliency,
+        Citations,
+        Region
+    FROM @papersAffiliationRegion;
+
+// Separate papers by region
+@papers_US =
+    SELECT PaperId,
+           Year,
+           Saliency,
+           Citations
+    FROM @paperRegion
+    WHERE Region == "United States";
+
+@papers_EU =
+    SELECT PaperId,
+           Year,
+           Saliency,
+           Citations
+    FROM @paperRegion
+    WHERE Region == "EU";
+
+@papers_China =
+    SELECT PaperId,
+           Year,
+           Saliency,
+           Citations
+    FROM @paperRegion
+    WHERE Region == "China";
+
+@papers_Japan =
+    SELECT PaperId,
+           Year,
+           Saliency,
+           Citations
+    FROM @paperRegion
+    WHERE Region == "Japan";
+
+@papers_US_EU =
+    SELECT A.*
+    FROM @papers_US AS A
+    INNER JOIN @papers_EU AS B ON A.PaperId == B.PaperId;
+
+@papers_US_China =
+    SELECT A.*
+    FROM @papers_US AS A
+    INNER JOIN @papers_China AS B ON A.PaperId == B.PaperId;
+
+@papers_EU_China =
+    SELECT A.*
+    FROM @papers_EU AS A
+    INNER JOIN @papers_China AS B ON A.PaperId == B.PaperId;
+
+@papers_US_EU_China =
+    SELECT A.*
+    FROM @papers_US AS A
+    INNER JOIN @papers_EU AS B ON A.PaperId == B.PaperId
+    INNER JOIN @papers_China AS C ON A.PaperId == C.PaperId;
+
+// Paper stats by region
+@paperStats_US =
+    SELECT Year,
+           COUNT(DISTINCT PaperId) AS PaperCount,
+           SUM(Saliency) AS Saliency,
+           SUM(Citations) AS Citations
+    FROM @papers_US
+    GROUP BY Year;
+
+@paperStats_EU =
+    SELECT Year,
+           COUNT(DISTINCT PaperId) AS PaperCount,
+           SUM(Saliency) AS Saliency,
+           SUM(Citations) AS Citations
+    FROM @papers_EU
+    GROUP BY Year;
+
+@paperStats_China =
+    SELECT Year,
+           COUNT(DISTINCT PaperId) AS PaperCount,
+           SUM(Saliency) AS Saliency,
+           SUM(Citations) AS Citations
+    FROM @papers_China
+    GROUP BY Year;
+
+@paperStats_Japan =
+    SELECT Year,
+           COUNT(DISTINCT PaperId) AS PaperCount,
+           SUM(Saliency) AS Saliency,
+           SUM(Citations) AS Citations
+    FROM @papers_Japan
+    GROUP BY Year;
+
+@paperStats_US_EU =
+    SELECT Year,
+           COUNT(DISTINCT PaperId) AS PaperCount,
+           SUM(Saliency) AS Saliency,
+           SUM(Citations) AS Citations
+    FROM @papers_US_EU
+    GROUP BY Year;
+
+@paperStats_US_China =
+    SELECT Year,
+           COUNT(DISTINCT PaperId) AS PaperCount,
+           SUM(Saliency) AS Saliency,
+           SUM(Citations) AS Citations
+    FROM @papers_US_China
+    GROUP BY Year;
+
+@paperStats_EU_China =
+    SELECT Year,
+           COUNT(DISTINCT PaperId) AS PaperCount,
+           SUM(Saliency) AS Saliency,
+           SUM(Citations) AS Citations
+    FROM @papers_EU_China
+    GROUP BY Year;
+
+@paperStats_US_EU_China =
+    SELECT Year,
+           COUNT(DISTINCT PaperId) AS PaperCount,
+           SUM(Saliency) AS Saliency,
+           SUM(Citations) AS Citations
+    FROM @papers_US_EU_China
+    GROUP BY Year;
+
+// Get region year paper stats
+@regionYearPaperStats =
+    SELECT "United States" AS RegionDescription, *
+    FROM @paperStats_US
+    UNION ALL
+    SELECT "EU" AS RegionDescription, *
+    FROM @paperStats_EU
+    UNION ALL
+    SELECT "China" AS RegionDescription, *
+    FROM @paperStats_China
+    UNION ALL
+    SELECT "Japan" AS RegionDescription, *
+    FROM @paperStats_Japan
+    UNION ALL
+    SELECT "United States/EU" AS RegionDescription, *
+    FROM @paperStats_US_EU
+    UNION ALL
+    SELECT "United States/China" AS RegionDescription, *
+    FROM @paperStats_US_China
+    UNION ALL
+    SELECT "EU/China" AS RegionDescription, *
+    FROM @paperStats_EU_China
+    UNION ALL
+    SELECT "United States/EU/China" AS RegionDescription, *
+    FROM @paperStats_US_EU_China;
+
+OUTPUT @regionYearPaperStats
+TO @Out_RegionYearPaperStats
+ORDER BY RegionDescription, Year
+USING Outputters.Csv(outputHeader:true);
+
+// Generated Code Behind Footer
+USE DATABASE [master];
+USE SCHEMA [dbo];
+// Generated Code Behind Footer
